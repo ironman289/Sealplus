@@ -176,12 +176,6 @@ class App : Application(), SingletonImageLoader.Factory {
                 android.os.Process.killProcess(android.os.Process.myPid())
             }
         }
-        val tgIntent = Intent(this, TelegramRelayService::class.java)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            startForegroundService(tgIntent)
-        } else {
-            startService(tgIntent)
-        }
     }
 
     override fun onLowMemory() {
