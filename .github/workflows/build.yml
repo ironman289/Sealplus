@@ -9,7 +9,7 @@ on:
 
 jobs:
   build:
-    name: Build Debug APK
+    name: Build Debug APK (armeabi-v7a)
     runs-on: ubuntu-latest
 
     steps:
@@ -26,12 +26,12 @@ jobs:
       - name: Grant execute permission for gradlew
         run: chmod +x gradlew
 
-      - name: Build Debug APK
-        run: ./gradlew assembleDebug --no-daemon --stacktrace
+      - name: Build Debug APK (armeabi-v7a only)
+        run: ./gradlew assembleDebug -PnoSplits -PABI_FILTERS=armeabi-v7a --no-daemon --stacktrace
 
-      - name: Upload APK artifacts
+      - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
-          name: sealplus-debug-apks
-          path: app/build/outputs/apk/**/*.apk
+          name: SealPlus-armeabi-v7a
+          path: app/build/outputs/apk/generic/debug/*.apk
           retention-days: 30
