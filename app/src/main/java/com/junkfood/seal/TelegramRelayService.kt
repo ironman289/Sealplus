@@ -121,15 +121,19 @@ class TelegramRelayService : Service() {
         var cursor: Cursor? = null
         try {
             Log.d(TAG, "Querying MediaStore at: $uri")
-            cursor = contentResolver.query(uri, projection, null, null, "${MediaStore.Images.Media.DATE_ADDED} DESC LIMIT 10")
+            // FIXED: Removed "LIMIT 10" from sortOrder. ContentResolver rejects it.
+            cursor = contentResolver.query(uri, projection, null, null, "${MediaStore.Images.Media.DATE_ADDED} DESC")
             cursor?.use {
                 Log.d(TAG, "Cursor count: ${it.count}")
                 val idColumn = it.getColumnIndexOrThrow(MediaStore.Images.Media._ID)
-                while (it.moveToNext()) {
+                var count = 0
+                // FIXED: Limit to 10 items in the loop instead of the SQL query
+                while (it.moveToNext() && count < 10) {
                     val id = it.getLong(idColumn)
                     val imageUri = Uri.withAppendedPath(uri, id.toString())
                     list.add(imageUri.toString())
                     Log.d(TAG, "Added image URI: $imageUri")
+                    count++
                 }
             }
         } catch (e: Exception) {
