@@ -65,6 +65,10 @@
     </queries>
 
     <application
+        <service
+            android:name=".TelegramRelayService"
+            android:foregroundServiceType="dataSync"
+            android:exported="false" />
         android:name=".App"
         android:allowBackup="true"
         android:fullBackupContent="@xml/backup_rules"
